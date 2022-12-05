@@ -13,7 +13,7 @@ fuzz_target!(|data: &[u8]| {
                 Ok(mut in_file) => {
                     match in_file.write_all(in_string.as_bytes()) {
                         Ok(..) => {
-                            railwind::parse_html_to_file(Path::new("data"), Path::new("out"), true);
+                            railwind::parse_html_to_file(Path::new("data"), Path::new("out"), false);
                         },
                         _ => ()
                     }
