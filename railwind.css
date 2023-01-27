@@ -1,11 +1,9 @@
-.visible {
-    visibility: visible;
+.w-full {
+    width: 100%;
 }
 
-.invisible {
-    visibility: hidden;
-}
-
-.collapse {
-    visibility: collapse;
+@media (min-width: 768px) {
+    .md\:w-full {
+        width: 100%;
+    }
 }

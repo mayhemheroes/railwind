@@ -1,8 +1,12 @@
+mod group;
 mod media_query;
+mod peer;
 mod pseudo_class;
 mod pseudo_element;
 
+pub use group::Group;
 pub use media_query::MediaQuery;
+pub use peer::Peer;
 pub use pseudo_class::PseudoClass;
 pub use pseudo_element::PseudoElement;
 
@@ -11,6 +15,8 @@ pub enum State {
     PseudoClass(PseudoClass),
     PseudoElement(PseudoElement),
     MediaQuery(MediaQuery),
+    Group(Group),
+    Peer(Peer),
 }
 
 impl State {
@@ -25,6 +31,14 @@ impl State {
 
         if let Some(pe) = PseudoElement::new(value) {
             return Some(State::PseudoElement(pe));
+        }
+
+        if let Some(g) = Group::new(value) {
+            return Some(State::Group(g));
+        }
+
+        if let Some(p) = Peer::new(value) {
+            return Some(State::Peer(p));
         }
 
         None
@@ -51,7 +65,7 @@ pub fn generate_state_selector(states: Vec<State>) -> String {
     }
 
     if pc.is_empty() {
-        return pe;
+        return format!(":{}", pe);
     }
 
     format!("{}::{}", pc, pe)
@@ -75,13 +89,16 @@ mod tests {
         assert_eq!(generate_state_selector(states), "active:hover".to_string());
 
         let states = vec![State::PseudoElement(PseudoElement::Before)];
-        assert_eq!(generate_state_selector(states), "before".to_string());
+        assert_eq!(generate_state_selector(states), ":before".to_string());
 
         let states = vec![
             State::PseudoElement(PseudoElement::Before),
             State::PseudoElement(PseudoElement::After),
         ];
-        assert_eq!(generate_state_selector(states), "before::after".to_string());
+        assert_eq!(
+            generate_state_selector(states),
+            ":before::after".to_string()
+        );
 
         let states = vec![
             State::PseudoClass(PseudoClass::Active),

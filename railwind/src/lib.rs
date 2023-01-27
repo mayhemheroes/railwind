@@ -1,31 +1,25 @@
-use std::{
-    fs::{self, File},
-    io::Write,
-    path::Path,
-};
-
-use class::{Class, Decl};
-use lazy_static::lazy_static;
-use line_col::LineColLookup;
+use class::{Borders, Class, Decl, Spacing};
+use indexmap::IndexMap;
 use modifiers::{generate_state_selector, MediaQuery, State};
-use regex::Regex;
 use utils::{indent_string, replace_invalid_chars};
 use warning::{Position, Warning, WarningType};
+
+use lazy_static::lazy_static;
+use line_col::LineColLookup;
+use regex::Regex;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::Path;
 
 mod class;
 mod modifiers;
 mod utils;
-mod warning;
+pub mod warning;
 
 lazy_static! {
     static ref CLASS_REGEX: Regex =
-        Regex::new(r#"(?:class|className)=(?:["']\W+\s*(?:\w+)\()?["']([^'"]+)['"]"#).unwrap();
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct RawClass<'a> {
-    pub class: &'a str,
-    pub position: Position,
+        Regex::new(r#"(?:class|className)=(?:["]\W+\s*(?:\w+)\()?["]([^"]+)["]"#).unwrap();
+    static ref PREFLIGHT: &'static str = include_str!("../preflight.css");
 }
 
 #[derive(Debug)]
@@ -45,9 +39,21 @@ impl<'a> ParsedClass<'a> {
     }
 
     pub fn try_to_string(self) -> Option<String> {
+        let selector_to_append = match &self.class {
+            Class::Spacing(spacing) => match spacing {
+                Spacing::SpaceBetween(_) => Some("> :not([hidden]) ~ :not([hidden])"),
+                _ => None,
+            },
+            Class::Borders(borders) => match borders {
+                Borders::DivideWidth(_) => Some("> :not([hidden]) ~ :not([hidden])"),
+                _ => None,
+            },
+            _ => None,
+        };
+
         let decl = self.class.to_decl()?;
 
-        let class_selector = if self.states.iter().any(|s| match s {
+        let mut class_selector = if self.states.iter().any(|s| match s {
             State::PseudoClass(_) | State::PseudoElement(_) => true,
             _ => false,
         }) {
@@ -59,6 +65,22 @@ impl<'a> ParsedClass<'a> {
         } else {
             replace_invalid_chars(self.raw_class_name)
         };
+
+        for state in self.states.iter() {
+            match state {
+                State::Group(g) => {
+                    class_selector = format!("{}{}", g.to_static_str(), class_selector)
+                }
+                State::Peer(p) => {
+                    class_selector = format!("{}{}", p.to_static_str(), class_selector)
+                }
+                _ => (),
+            }
+        }
+
+        if let Some(to_append) = selector_to_append {
+            class_selector = format!("{} {}", class_selector, to_append);
+        }
 
         let mut generated_class = match decl {
             Decl::FullClass(_) => decl.to_string().replace("container", &class_selector),
@@ -112,8 +134,7 @@ pub fn parse_html_to_file(input: &Path, output: &Path, include_preflight: bool) 
     let mut css_file = File::create(output).unwrap();
 
     if include_preflight {
-        let preflight = fs::read_to_string("preflight.css").unwrap();
-        css_file.write_all(preflight.as_bytes()).unwrap();
+        css_file.write_all(PREFLIGHT.as_bytes()).unwrap();
         css_file.write_all("\n\n".as_bytes()).unwrap();
     }
 
@@ -139,8 +160,7 @@ pub fn parse_html_to_string(
     let mut css = String::new();
 
     if include_preflight {
-        let preflight = fs::read_to_string("preflight.css").unwrap();
-        css.push_str(&preflight);
+        css.push_str(&PREFLIGHT);
         css.push_str("\n\n");
     }
 
@@ -161,8 +181,7 @@ pub fn parse_string(input: &str, include_preflight: bool, warnings: &mut Vec<War
     let mut css = String::new();
 
     if include_preflight {
-        let preflight = fs::read_to_string("preflight.css").unwrap();
-        css.push_str(&preflight);
+        css.push_str(&PREFLIGHT);
         css.push_str("\n\n");
     }
 
@@ -172,26 +191,23 @@ pub fn parse_string(input: &str, include_preflight: bool, warnings: &mut Vec<War
     css
 }
 
-fn collect_classes_from_html(html: &str) -> Vec<RawClass> {
+fn collect_classes_from_html(html: &str) -> IndexMap<&str, Position> {
     let lookup = LineColLookup::new(html);
 
-    let mut classes = Vec::new();
+    let mut classes = IndexMap::new();
 
     for captures in CLASS_REGEX.captures_iter(html) {
         if let Some(group) = captures.get(1) {
             let mut index = group.start();
 
             for cap in group.as_str().split([' ', '\n']) {
-                if cap.is_empty() {
+                if cap.is_empty() || (cap == "group") || (cap == "peer") {
                     index += cap.len() + 1;
                     continue;
                 }
 
                 let position = lookup.get(index).into();
-                classes.push(RawClass {
-                    class: cap,
-                    position,
-                });
+                classes.insert(cap, position);
 
                 index += cap.len() + 1;
             }
@@ -201,9 +217,9 @@ fn collect_classes_from_html(html: &str) -> Vec<RawClass> {
     classes
 }
 
-fn collect_classes_from_str(text: &str) -> Vec<RawClass> {
+fn collect_classes_from_str(text: &str) -> IndexMap<&str, Position> {
     let lookup = LineColLookup::new(text);
-    let mut classes = Vec::new();
+    let mut classes = IndexMap::new();
     let mut index = 0;
 
     for cap in text.split([' ', '\n']) {
@@ -213,10 +229,7 @@ fn collect_classes_from_str(text: &str) -> Vec<RawClass> {
         }
 
         let position = lookup.get(index).into();
-        classes.push(RawClass {
-            class: cap,
-            position,
-        });
+        classes.insert(cap, position);
 
         index += cap.len() + 1;
     }
@@ -225,15 +238,24 @@ fn collect_classes_from_str(text: &str) -> Vec<RawClass> {
 }
 
 fn parse_raw_classes<'a>(
-    raw_classes: Vec<RawClass<'a>>,
+    raw_classes: IndexMap<&'a str, Position>,
     warnings: &mut Vec<Warning>,
 ) -> Vec<ParsedClass<'a>> {
     let mut parsed_classes = Vec::new();
 
-    for raw_class in raw_classes {
-        if let Some(colon_index) = raw_class.class.rfind(':') {
-            let states = &raw_class.class[..colon_index];
-            let entire_class = &raw_class.class[colon_index + 1..];
+    for (raw_class, position) in raw_classes {
+        if let Some(colon_index) = raw_class.rfind(':') {
+            // if an arbitrary value inside [...] contains a colon
+            if let Some(left_bracket_index) = raw_class.rfind('[') {
+                if left_bracket_index < colon_index {
+                    if let Some(class) = Class::new(raw_class) {
+                        parsed_classes.push(ParsedClass::new(raw_class, class, Vec::new()))
+                    }
+                }
+            }
+
+            let states = &raw_class[..colon_index];
+            let entire_class = &raw_class[colon_index + 1..];
 
             let mut parsed_states = Vec::new();
             for state in states.split(':') {
@@ -243,24 +265,16 @@ fn parse_raw_classes<'a>(
             }
 
             if let Some(class) = Class::new(entire_class) {
-                parsed_classes.push(ParsedClass::new(raw_class.class, class, parsed_states))
+                parsed_classes.push(ParsedClass::new(raw_class, class, parsed_states))
             } else {
                 let warning_type = WarningType::ClassNotFound;
-                warnings.push(Warning::new(
-                    raw_class.class,
-                    &raw_class.position,
-                    warning_type,
-                ));
+                warnings.push(Warning::new(raw_class, &position, warning_type));
             }
-        } else if let Some(class) = Class::new(raw_class.class) {
-            parsed_classes.push(ParsedClass::new(raw_class.class, class, Vec::new()))
+        } else if let Some(class) = Class::new(raw_class) {
+            parsed_classes.push(ParsedClass::new(raw_class, class, Vec::new()))
         } else {
             let warning_type = WarningType::ClassNotFound;
-            warnings.push(Warning::new(
-                raw_class.class,
-                &raw_class.position,
-                warning_type,
-            ));
+            warnings.push(Warning::new(raw_class, &position, warning_type));
         }
     }
 
@@ -308,20 +322,11 @@ mod tests {
         assert!(!classes.is_empty());
         assert_eq!(
             classes,
-            vec![
-                RawClass {
-                    class: "px-5",
-                    position: Position::new(1, 1)
-                },
-                RawClass {
-                    class: "justify-start",
-                    position: Position::new(1, 6)
-                },
-                RawClass {
-                    class: "container",
-                    position: Position::new(1, 20)
-                }
-            ]
+            IndexMap::from([
+                ("px-5", Position::new(1, 1)),
+                ("justify-start", Position::new(1, 6)),
+                ("container", Position::new(1, 20))
+            ])
         );
     }
 
@@ -333,20 +338,11 @@ mod tests {
         assert!(!classes.is_empty());
         assert_eq!(
             classes,
-            vec![
-                RawClass {
-                    class: "px-5",
-                    position: Position::new(1, 8)
-                },
-                RawClass {
-                    class: "justify-start",
-                    position: Position::new(1, 13)
-                },
-                RawClass {
-                    class: "container",
-                    position: Position::new(1, 27)
-                }
-            ]
+            IndexMap::from([
+                ("px-5", Position::new(1, 8)),
+                ("justify-start", Position::new(1, 13)),
+                ("container", Position::new(1, 27))
+            ])
         );
     }
 }
