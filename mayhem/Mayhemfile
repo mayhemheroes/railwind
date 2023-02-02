@@ -1,0 +1,6 @@
+project: railwind
+target: railwind-fuzz
+
+cmds:
+    - cmd: ./railwind-fuzz
+      libfuzzer: true
